@@ -29,6 +29,7 @@ class BondlinkServerDashboard {
 
     init() {
         // Bug fix: all DOM queries happen here, after DOMContentLoaded
+        if (this._pollInterval) return;   // prevent double-init
         if (!this.token) {
             window.location.href = '/';
             return;
@@ -41,7 +42,8 @@ class BondlinkServerDashboard {
         Promise.all([this.fetchStatus(), this.fetchClients()]);
 
         // Poll both every 5 seconds as fallback
-        setInterval(() => {
+        // Bug fix: store interval handle so double-init is prevented
+        this._pollInterval = setInterval(() => {
             this.fetchStatus();
             this.fetchClients();
         }, 5000);
@@ -60,8 +62,12 @@ class BondlinkServerDashboard {
         };
 
         this.ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.type === 'update') this.updateDashboard(data);
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'update') this.updateDashboard(data);
+            } catch (e) {
+                console.warn('Received non-JSON WebSocket message:', event.data);
+            }
         };
 
         this.ws.onerror = (error) => {
@@ -127,13 +133,13 @@ class BondlinkServerDashboard {
         }
 
         if (data.clients) {
-            this.updateClients(data.clients);
-
+            // Bug fix: compute totals in a single pass, then update UI — eliminates double iteration
             let totalRx = 0, totalTx = 0;
             data.clients.forEach(c => {
                 totalRx += c.rx_bytes || 0;
                 totalTx += c.tx_bytes || 0;
             });
+            this.updateClients(data.clients);
 
             // Bug fix: push RATE (delta MB/s since last update), not cumulative total.
             // Without this the chart shows ever-growing totals labelled as "Mbps".
