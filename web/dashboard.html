@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bondlink Server - Dashboard</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-left">
+                <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                    <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                    <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                </svg>
+                <h1>Bondlink Server</h1>
+            </div>
+            <div class="header-right">
+                <div class="status-badge" id="serverStatus">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Connecting...</span>
+                </div>
+                <div class="user-info">
+                    <span id="username">Admin</span>
+                    <button id="logoutBtn" class="btn-logout">Logout</button>
+                </div>
+            </div>
+        </header>
+
+        <div class="dashboard">
+            <!-- Server Statistics -->
+            <section class="section">
+                <h2 class="section-title">Server Statistics</h2>
+                <div class="stats-grid">
+                    <div class="stat-card glass-card">
+                        <div class="stat-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                                <circle cx="9" cy="7" r="4"></circle>
+                                <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                                <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                            </svg>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-label">Total Clients</div>
+                            <div class="stat-value" id="totalClients">0</div>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card glass-card">
+                        <div class="stat-icon active">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="12" y1="8" x2="12" y2="12"></line>
+                                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                            </svg>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-label">Active Clients</div>
+                            <div class="stat-value" id="activeClients">0</div>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card glass-card">
+                        <div class="stat-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                                <circle cx="8.5" cy="7" r="4"></circle>
+                                <polyline points="17 11 19 13 23 9"></polyline>
+                            </svg>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-label">Total Tunnels</div>
+                            <div class="stat-value" id="totalTunnels">0</div>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card glass-card">
+                        <div class="stat-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                            </svg>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-label">Routed Packets</div>
+                            <div class="stat-value" id="routedPackets">0</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Bandwidth Overview -->
+            <section class="section">
+                <h2 class="section-title">Bandwidth Overview</h2>
+                <div class="bandwidth-grid">
+                    <div class="bandwidth-card glass-card">
+                        <div class="bandwidth-header">
+                            <h3>Download</h3>
+                            <span class="bandwidth-rate" id="downloadRate">0 Mbps</span>
+                        </div>
+                        <canvas id="downloadChart" width="400" height="100"></canvas>
+                    </div>
+                    
+                    <div class="bandwidth-card glass-card">
+                        <div class="bandwidth-header">
+                            <h3>Upload</h3>
+                            <span class="bandwidth-rate" id="uploadRate">0 Mbps</span>
+                        </div>
+                        <canvas id="uploadChart" width="400" height="100"></canvas>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Connected Clients -->
+            <section class="section">
+                <h2 class="section-title">Connected Clients</h2>
+                <div class="clients-container">
+                    <div id="clientsList" class="clients-list">
+                        <!-- Client cards will be dynamically inserted here -->
+                    </div>
+                    <div id="noClients" class="no-clients" style="display: none;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="9" cy="7" r="4"></circle>
+                            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                        </svg>
+                        <p>No clients connected</p>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

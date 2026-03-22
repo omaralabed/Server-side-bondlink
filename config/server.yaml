@@ -1,0 +1,110 @@
+# Bondlink Server Configuration
+# Multi-client VPS tunnel aggregation server
+
+# Server listening settings
+server:
+  host: "0.0.0.0"  # Listen on all interfaces
+  tunnel_port: 8443  # Port for client tunnel connections
+  web_port: 80  # Web UI port (standard HTTP)
+  api_port: 8080  # API port (alternative to web_port)
+  
+  # Authentication tokens for clients
+  # Generate with: openssl rand -hex 32
+  # Each client must have a unique token
+  client_tokens:
+    - token: "CHANGE_ME_CLIENT_1_TOKEN"
+      client_id: "client1"
+      description: "Office Location"
+    - token: "CHANGE_ME_CLIENT_2_TOKEN"
+      client_id: "client2"
+      description: "Home Location"
+    # Add more clients as needed
+
+# Web UI Authentication
+web_auth:
+  enabled: true
+  # Default admin credentials (CHANGE THESE!)
+  users:
+    - username: "admin"
+      password_hash: "GENERATE_WITH_SCRIPT"  # Run: python -m server.auth generate-password
+      role: "admin"
+    # Add more users as needed
+  
+  # JWT settings for session management
+  jwt_secret: "CHANGE_ME_GENERATE_SECURE_SECRET"  # openssl rand -hex 32
+  jwt_algorithm: "HS256"
+  access_token_expire_minutes: 60
+
+# Tunnel settings
+tunnel:
+  protocol: "udp"  # udp or tcp
+  mtu: 1400
+  encryption: true
+  compression: false
+  
+  # Buffer sizes
+  send_buffer_size: 2097152  # 2MB
+  recv_buffer_size: 2097152  # 2MB
+  
+  # Timeout settings
+  client_timeout: 30  # seconds
+  heartbeat_interval: 10  # seconds
+  
+  # Max clients
+  max_clients: 50
+
+# Traffic routing
+routing:
+  enable_forwarding: true
+  enable_masquerading: true
+  
+  # Default route for outgoing traffic
+  default_interface: "eth0"  # Main VPS internet interface
+  
+  # Load balancing mode for multi-tunnel clients
+  load_balance_mode: "round_robin"  # round_robin, weighted, latency_based
+
+# Packet reordering buffer
+reordering:
+  enabled: true
+  buffer_size: 1000  # packets
+  max_delay_ms: 100  # maximum reordering delay
+
+# Database (for client management and statistics)
+database:
+  type: "sqlite"  # sqlite or postgresql
+  path: "/var/lib/bondlink/server.db"
+  
+  # For PostgreSQL (optional):
+  # host: "localhost"
+  # port: 5432
+  # database: "bondlink"
+  # username: "bondlink"
+  # password: "secure_password"
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  file: "/var/log/bondlink/server.log"
+  max_size_mb: 100
+  backup_count: 5
+  console: true
+  format: "json"  # json or text
+
+# Monitoring
+monitoring:
+  prometheus_enabled: true
+  prometheus_port: 9091
+  stats_interval: 10  # seconds
+  
+  # Statistics retention
+  keep_stats_days: 30
+
+# System settings
+system:
+  run_as_user: "root"  # Required for network configuration
+  pid_file: "/var/run/bondlink/server.pid"
+  
+  # Rate limiting (per client)
+  max_bandwidth_mbps: 1000  # 0 = unlimited
+  max_tunnels_per_client: 10
