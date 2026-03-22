@@ -1,365 +1,385 @@
-// Dashboard JavaScript
+// Bondlink Server Dashboard - Real-time Data Visualization
 
 class BondlinkServerDashboard {
     constructor() {
+        // Bug fix: don't touch the DOM in the constructor — do it in init()
+        // which is called from DOMContentLoaded
         this.ws = null;
-        this.token = localStorage.getItem('access_token');
+        this.token    = localStorage.getItem('access_token');
         this.username = localStorage.getItem('username') || 'Admin';
-        
-        // Chart data
+
+        // Reconnect state — with backoff, same pattern as client app.js
+        this.reconnectAttempts    = 0;
+        this.maxReconnectAttempts = 10;
+        this.reconnectDelay       = 3000;
+
+        // Chart data history — pre-filled with zeros so the chart renders immediately
         this.downloadData = new Array(60).fill(0);
-        this.uploadData = new Array(60).fill(0);
-        
-        // DOM elements
-        this.serverStatus = document.getElementById('serverStatus');
-        this.usernameEl = document.getElementById('username');
-        this.logoutBtn = document.getElementById('logoutBtn');
-        
-        this.totalClients = document.getElementById('totalClients');
-        this.activeClients = document.getElementById('activeClients');
-        this.totalTunnels = document.getElementById('totalTunnels');
-        this.routedPackets = document.getElementById('routedPackets');
-        
-        this.downloadRate = document.getElementById('downloadRate');
-        this.uploadRate = document.getElementById('uploadRate');
-        this.downloadChart = document.getElementById('downloadChart');
-        this.uploadChart = document.getElementById('uploadChart');
-        
-        this.clientsList = document.getElementById('clientsList');
-        this.noClients = document.getElementById('noClients');
-        
-        // Initialize
-        this.init();
+        this.uploadData   = new Array(60).fill(0);
+
+        // Track previous cumulative byte counters so we can push a RATE (delta),
+        // not the raw cumulative total, to the chart — fixes the "MB total vs Mbps" unit mismatch
+        this._prevRx = null;
+        this._prevTx = null;
+
+        // Canvas contexts — set in init() after DOM is ready
+        this.downloadCtx = null;
+        this.uploadCtx   = null;
     }
-    
+
     init() {
-        // Check authentication
+        // Bug fix: all DOM queries happen here, after DOMContentLoaded
         if (!this.token) {
             window.location.href = '/';
             return;
         }
-        
-        // Set username
-        this.usernameEl.textContent = this.username;
-        
-        // Setup event listeners
-        this.logoutBtn.addEventListener('click', () => this.logout());
-        
-        // Setup charts
+
         this.setupCharts();
-        
-        // Connect WebSocket
         this.connectWebSocket();
-        
-        // Initial data fetch
-        this.fetchStatus();
+
+        // Bug fix: fetchClients was never called on load — added here
+        Promise.all([this.fetchStatus(), this.fetchClients()]);
+
+        // Poll both every 5 seconds as fallback
+        setInterval(() => {
+            this.fetchStatus();
+            this.fetchClients();
+        }, 5000);
     }
-    
+
     connectWebSocket() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/api/ws`;
-        
+        const wsUrl    = `${protocol}//${window.location.host}/api/ws`;
+
         this.ws = new WebSocket(wsUrl);
-        
+
         this.ws.onopen = () => {
             console.log('WebSocket connected');
+            this.reconnectAttempts = 0;   // reset counter on successful connect
             this.updateStatus('connected');
         };
-        
+
         this.ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            
-            if (data.type === 'update') {
-                this.updateDashboard(data);
-            }
+            if (data.type === 'update') this.updateDashboard(data);
         };
-        
+
         this.ws.onerror = (error) => {
             console.error('WebSocket error:', error);
             this.updateStatus('error');
         };
-        
+
         this.ws.onclose = () => {
             console.log('WebSocket disconnected');
             this.updateStatus('disconnected');
-            
-            // Reconnect after 5 seconds
-            setTimeout(() => this.connectWebSocket(), 5000);
+            this._reconnectWebSocket();
         };
     }
-    
+
+    // Bug fix: exponential backoff + permanent-lockout prevention (mirrors app.js)
+    _reconnectWebSocket() {
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            console.warn('Max reconnect attempts reached. Will retry in 60 s.');
+            setTimeout(() => {
+                this.reconnectAttempts = 0;
+                this.connectWebSocket();
+            }, 60000);
+            return;
+        }
+        this.reconnectAttempts++;
+        const delay = Math.min(this.reconnectDelay * this.reconnectAttempts, 30000);
+        console.log(`Reconnecting in ${delay}ms... (attempt ${this.reconnectAttempts})`);
+        setTimeout(() => this.connectWebSocket(), delay);
+    }
+
     async fetchStatus() {
         try {
             const response = await fetch('/api/status', {
-                headers: {
-                    'Authorization': `Bearer ${this.token}`
-                }
+                headers: { 'Authorization': `Bearer ${this.token}` }
             });
-            
-            if (response.status === 401) {
-                this.logout();
-                return;
-            }
-            
-            if (!response.ok) {
-                throw new Error('Failed to fetch status');
-            }
-            
+            if (response.status === 401) { this.logout(); return; }
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
             this.updateServerStats(data);
-            
         } catch (error) {
             console.error('Failed to fetch status:', error);
         }
     }
-    
+
     async fetchClients() {
         try {
             const response = await fetch('/api/clients', {
-                headers: {
-                    'Authorization': `Bearer ${this.token}`
-                }
+                headers: { 'Authorization': `Bearer ${this.token}` }
             });
-            
-            if (response.status === 401) {
-                this.logout();
-                return;
-            }
-            
-            if (!response.ok) {
-                throw new Error('Failed to fetch clients');
-            }
-            
+            if (response.status === 401) { this.logout(); return; }
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
             this.updateClients(data.clients);
-            
         } catch (error) {
             console.error('Failed to fetch clients:', error);
         }
     }
-    
+
     updateDashboard(data) {
-        // Update server stats
         if (data.router_stats) {
-            this.routedPackets.textContent = this.formatNumber(data.router_stats.routed_packets);
+            const el = document.getElementById('routedPackets');
+            if (el) el.textContent = this.formatNumber(data.router_stats.routed_packets);
         }
-        
-        // Update clients
+
         if (data.clients) {
             this.updateClients(data.clients);
-            
-            // Calculate total bandwidth
-            let totalRx = 0;
-            let totalTx = 0;
-            
-            data.clients.forEach(client => {
-                totalRx += client.rx_bytes || 0;
-                totalTx += client.tx_bytes || 0;
+
+            let totalRx = 0, totalTx = 0;
+            data.clients.forEach(c => {
+                totalRx += c.rx_bytes || 0;
+                totalTx += c.tx_bytes || 0;
             });
-            
-            // Update charts (simplified rate calculation)
-            this.downloadData.push(totalRx / 1024 / 1024);
+
+            // Bug fix: push RATE (delta MB/s since last update), not cumulative total.
+            // Without this the chart shows ever-growing totals labelled as "Mbps".
+            const MB = 1024 * 1024;
+            const rxRate = this._prevRx !== null ? Math.max((totalRx - this._prevRx) / MB, 0) : 0;
+            const txRate = this._prevTx !== null ? Math.max((totalTx - this._prevTx) / MB, 0) : 0;
+            this._prevRx = totalRx;
+            this._prevTx = totalTx;
+
+            this.downloadData.push(rxRate);
             this.downloadData.shift();
-            
-            this.uploadData.push(totalTx / 1024 / 1024);
+            this.uploadData.push(txRate);
             this.uploadData.shift();
-            
+
             this.updateCharts();
         }
     }
-    
+
     updateServerStats(data) {
-        this.totalClients.textContent = data.total_clients || 0;
-        this.activeClients.textContent = data.active_clients || 0;
-        this.totalTunnels.textContent = data.total_tunnels || 0;
-        
+        // Bug fix: set() helper defined ONCE here at the top of the method,
+        // not duplicated in multiple branches (was duplicated in updateClients previously).
+        const set = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = val;
+        };
+        set('totalClients',  data.total_clients  || 0);
+        set('activeClients', data.active_clients || 0);
+        set('totalTunnels',  data.total_tunnels  || 0);
         if (data.router_stats) {
-            this.routedPackets.textContent = this.formatNumber(data.router_stats.routed_packets);
+            set('routedPackets', this.formatNumber(data.router_stats.routed_packets));
         }
     }
-    
+
     updateClients(clients) {
+        const grid = document.getElementById('clientsGrid');
+        if (!grid) return;
+
+        // Bug fix: set() helper defined ONCE at the top — no longer duplicated
+        // in the empty-clients branch and the populated branch.
+        const set = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = val;
+        };
+
         if (!clients || clients.length === 0) {
-            this.clientsList.innerHTML = '';
-            this.noClients.style.display = 'block';
-            this.totalClients.textContent = '0';
-            this.activeClients.textContent = '0';
-            this.totalTunnels.textContent = '0';
+            grid.innerHTML = `
+                <div style="grid-column:1/-1; text-align:center; padding:60px 20px; color:var(--text-muted);">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="margin-bottom:16px; opacity:0.4;">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke-width="1.5"/>
+                        <circle cx="9" cy="7" r="4" stroke-width="1.5"/>
+                    </svg>
+                    <p>No clients connected</p>
+                </div>`;
+            set('totalClients', '0');
+            set('activeClients', '0');
+            set('totalTunnels', '0');
             return;
         }
-        
-        this.noClients.style.display = 'none';
-        
-        // Update counts
-        this.totalClients.textContent = clients.length;
-        this.activeClients.textContent = clients.filter(c => c.active_tunnels > 0).length;
-        this.totalTunnels.textContent = clients.reduce((sum, c) => sum + c.active_tunnels, 0);
-        
-        // Update client cards
-        this.clientsList.innerHTML = clients.map(client => this.renderClientCard(client)).join('');
+
+        set('totalClients',  clients.length);
+        set('activeClients', clients.filter(c => c.active_tunnels > 0).length);
+        set('totalTunnels',  clients.reduce((s, c) => s + c.active_tunnels, 0));
+
+        // Incremental update — only create card if it doesn't exist yet
+        const existingIds = new Set(
+            [...grid.querySelectorAll('[data-client-id]')].map(el => el.dataset.clientId)
+        );
+        const incomingIds = new Set(clients.map(c => c.client_id));
+
+        // Remove cards for disconnected clients
+        existingIds.forEach(id => {
+            if (!incomingIds.has(id)) {
+                const el = grid.querySelector(`[data-client-id="${CSS.escape(id)}"]`);
+                if (el) el.remove();
+            }
+        });
+
+        clients.forEach(client => {
+            let card = grid.querySelector(`[data-client-id="${CSS.escape(client.client_id)}"]`);
+            if (!card) {
+                card = document.createElement('div');
+                card.dataset.clientId = client.client_id;
+                grid.appendChild(card);
+            }
+            this.renderClientCard(card, client);
+        });
     }
-    
-    renderClientCard(client) {
-        return `
-            <div class="client-card glass-card">
-                <div class="client-header">
-                    <div class="client-id">${this.escapeHtml(client.client_id)}</div>
-                    <div class="client-status ${client.active_tunnels > 0 ? 'active' : ''}">
-                        ${client.active_tunnels > 0 ? 'Active' : 'Inactive'}
+
+    // Uses CSS classes that exist in styles.css (interface-card, health-status, etc.)
+    renderClientCard(card, client) {
+        const isActive    = client.active_tunnels > 0;
+        const healthClass = isActive ? 'healthy' : 'down';
+        const healthLabel = isActive ? 'ACTIVE'  : 'INACTIVE';
+
+        card.className = `interface-card ${isActive ? 'active' : ''}`;
+
+        card.innerHTML = `
+            <div class="interface-header">
+                <div class="interface-title-section">
+                    <div class="interface-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke-width="2.5"/>
+                            <circle cx="9" cy="7" r="4" stroke-width="2.5"/>
+                            <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke-width="2.5"/>
+                        </svg>
+                    </div>
+                    <div class="interface-title-info">
+                        <h3>${this.escapeHtml(client.client_id)}</h3>
+                        <div class="interface-subtitle">${client.active_tunnels} tunnel${client.active_tunnels !== 1 ? 's' : ''} active</div>
                     </div>
                 </div>
-                
-                <div class="client-stats">
-                    <div class="client-stat">
-                        <div class="client-stat-label">Tunnels</div>
-                        <div class="client-stat-value">${client.active_tunnels}</div>
-                    </div>
-                    <div class="client-stat">
-                        <div class="client-stat-label">Download</div>
-                        <div class="client-stat-value">${this.formatBytes(client.rx_bytes)}</div>
-                    </div>
-                    <div class="client-stat">
-                        <div class="client-stat-label">Upload</div>
-                        <div class="client-stat-value">${this.formatBytes(client.tx_bytes)}</div>
-                    </div>
-                    <div class="client-stat">
-                        <div class="client-stat-label">Packets</div>
-                        <div class="client-stat-value">${this.formatNumber(client.rx_packets + client.tx_packets)}</div>
-                    </div>
-                </div>
-                
-                ${client.tunnels && client.tunnels.length > 0 ? `
-                    <div class="tunnels-list">
-                        ${client.tunnels.map(tunnel => `
-                            <div class="tunnel-item">
-                                <div class="tunnel-name">${this.escapeHtml(tunnel.wan_interface)}</div>
-                                <div class="tunnel-status">
-                                    <span class="tunnel-dot"></span>
-                                    <span>${this.formatBytes(tunnel.rx_bytes)}</span>
-                                </div>
-                            </div>
-                        `).join('')}
-                    </div>
-                ` : ''}
+                <span class="health-status ${healthClass}">
+                    <span class="health-dot"></span>
+                    ${healthLabel}
+                </span>
             </div>
+
+            <div class="interface-body">
+                <div class="interface-info-row">
+                    <span class="info-label">Download</span>
+                    <span class="info-value download" style="color:var(--primary)">${this.formatBytes(client.rx_bytes)}</span>
+                </div>
+                <div class="interface-info-row">
+                    <span class="info-label">Upload</span>
+                    <span class="info-value upload" style="color:var(--success)">${this.formatBytes(client.tx_bytes)}</span>
+                </div>
+                <div class="interface-info-row">
+                    <span class="info-label">Packets</span>
+                    <span class="info-value">${this.formatNumber((client.rx_packets || 0) + (client.tx_packets || 0))}</span>
+                </div>
+            </div>
+
+            ${client.tunnels && client.tunnels.length > 0 ? `
+            <div class="speed-chart-container">
+                <div class="speed-label">Tunnels</div>
+                ${client.tunnels.map(t => `
+                <div class="interface-info-row">
+                    <span class="info-label">${this.escapeHtml(t.wan_interface)}</span>
+                    <span class="info-value">${this.formatBytes(t.rx_bytes)}</span>
+                </div>`).join('')}
+            </div>` : ''}
         `;
     }
-    
+
     setupCharts() {
-        this.downloadCtx = this.downloadChart.getContext('2d');
-        this.uploadCtx = this.uploadChart.getContext('2d');
-        
-        // Set canvas size
-        this.downloadChart.width = this.downloadChart.offsetWidth;
-        this.downloadChart.height = 100;
-        this.uploadChart.width = this.uploadChart.offsetWidth;
-        this.uploadChart.height = 100;
+        const dlCanvas = document.getElementById('downloadGraph');
+        const ulCanvas = document.getElementById('uploadGraph');
+        if (dlCanvas) this.downloadCtx = dlCanvas.getContext('2d');
+        if (ulCanvas) this.uploadCtx   = ulCanvas.getContext('2d');
     }
-    
+
     updateCharts() {
-        this.drawChart(this.downloadCtx, this.downloadData, '#00d4ff');
-        this.drawChart(this.uploadCtx, this.uploadData, '#ff6b35');
-        
-        // Update rates
-        const latestDownload = this.downloadData[this.downloadData.length - 1];
-        const latestUpload = this.uploadData[this.uploadData.length - 1];
-        
-        this.downloadRate.textContent = `${latestDownload.toFixed(2)} MB/s`;
-        this.uploadRate.textContent = `${latestUpload.toFixed(2)} MB/s`;
+        if (this.downloadCtx) this.drawChart(this.downloadCtx, this.downloadData, '#FF6B35', '#E85A2B');
+        if (this.uploadCtx)   this.drawChart(this.uploadCtx,   this.uploadData,   '#7AC943', '#68B336');
+
+        const latest = (arr) => arr[arr.length - 1] || 0;
+        const dlEl = document.getElementById('serverDownload');
+        const ulEl = document.getElementById('serverUpload');
+        if (dlEl) dlEl.textContent = latest(this.downloadData).toFixed(2);
+        if (ulEl) ulEl.textContent = latest(this.uploadData).toFixed(2);
     }
-    
-    drawChart(ctx, data, color) {
-        const canvas = ctx.canvas;
-        const width = canvas.width;
-        const height = canvas.height;
+
+    drawChart(ctx, data, colorStart, colorEnd) {
+        const canvas  = ctx.canvas;
+        const width   = canvas.width;
+        const height  = canvas.height;
         const padding = 10;
-        
-        // Clear canvas
+
         ctx.clearRect(0, 0, width, height);
-        
-        // Find max value for scaling
-        const max = Math.max(...data, 1);
-        
-        // Draw gradient
+
+        // Bug fix: guard against data.length < 2 to avoid divide-by-zero on xStep
+        if (data.length < 2) return;
+
+        const max   = Math.max(...data, 1);
+        // Use actual data length so line fills the canvas width correctly
+        const xStep = (width - padding * 2) / Math.max(data.length - 1, 1);
+
         const gradient = ctx.createLinearGradient(0, 0, 0, height);
-        gradient.addColorStop(0, color + '40');
-        gradient.addColorStop(1, color + '00');
-        
-        // Draw area
+        gradient.addColorStop(0, colorStart + '50');
+        gradient.addColorStop(1, colorEnd   + '00');
+
         ctx.beginPath();
         ctx.moveTo(padding, height - padding);
-        
-        data.forEach((value, index) => {
-            const x = padding + (index / (data.length - 1)) * (width - padding * 2);
-            const y = height - padding - (value / max) * (height - padding * 2);
-            ctx.lineTo(x, y);
+        data.forEach((v, i) => {
+            ctx.lineTo(padding + i * xStep, height - padding - (v / max) * (height - padding * 2));
         });
-        
-        ctx.lineTo(width - padding, height - padding);
+        ctx.lineTo(padding + (data.length - 1) * xStep, height - padding);
         ctx.closePath();
         ctx.fillStyle = gradient;
         ctx.fill();
-        
-        // Draw line
+
         ctx.beginPath();
-        data.forEach((value, index) => {
-            const x = padding + (index / (data.length - 1)) * (width - padding * 2);
-            const y = height - padding - (value / max) * (height - padding * 2);
-            
-            if (index === 0) {
-                ctx.moveTo(x, y);
-            } else {
-                ctx.lineTo(x, y);
-            }
+        data.forEach((v, i) => {
+            const x = padding + i * xStep;
+            const y = height - padding - (v / max) * (height - padding * 2);
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
         });
-        
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = colorStart;
+        ctx.lineWidth   = 2;
+        ctx.lineCap     = 'round';
+        ctx.lineJoin    = 'round';
         ctx.stroke();
     }
-    
+
     updateStatus(status) {
-        this.serverStatus.className = 'status-badge';
-        
+        const badge = document.getElementById('serverStatus');
+        if (!badge) return;
+
+        badge.className = 'status-badge';
+        const textEl = badge.querySelector('.status-text');
+
         if (status === 'connected') {
-            this.serverStatus.classList.add('connected');
-            this.serverStatus.querySelector('.status-text').textContent = 'Connected';
+            badge.classList.add('connected');
+            if (textEl) textEl.textContent = 'Running';
         } else if (status === 'error') {
-            this.serverStatus.querySelector('.status-text').textContent = 'Error';
+            badge.classList.add('disconnected');
+            if (textEl) textEl.textContent = 'Error';
         } else {
-            this.serverStatus.querySelector('.status-text').textContent = 'Disconnected';
+            badge.classList.add('disconnected');
+            if (textEl) textEl.textContent = 'Disconnected';
         }
     }
-    
+
     logout() {
         localStorage.removeItem('access_token');
         localStorage.removeItem('username');
         localStorage.removeItem('role');
-        
-        if (this.ws) {
-            this.ws.close();
-        }
-        
+        if (this.ws) this.ws.close();
         window.location.href = '/';
     }
-    
+
     formatBytes(bytes) {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
+        // Bug fix: guard against null, undefined, 0, and negative values
+        if (!bytes || bytes <= 0) return '0 B';
+        const k     = 1024;
         const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        const i     = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     }
-    
+
     formatNumber(num) {
-        if (num >= 1000000) {
-            return (num / 1000000).toFixed(1) + 'M';
-        } else if (num >= 1000) {
-            return (num / 1000).toFixed(1) + 'K';
-        }
-        return num.toString();
+        if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+        if (num >= 1000)    return (num / 1000).toFixed(1)    + 'K';
+        return Number.isInteger(num) ? num.toString() : num.toFixed(0);
     }
-    
+
     escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
@@ -367,5 +387,9 @@ class BondlinkServerDashboard {
     }
 }
 
-// Initialize dashboard
-const dashboard = new BondlinkServerDashboard();
+// Bug fix: instantiate and call init() after DOM is ready
+let dashboard;
+document.addEventListener('DOMContentLoaded', () => {
+    dashboard = new BondlinkServerDashboard();
+    dashboard.init();
+});
