@@ -19,6 +19,8 @@ logger = get_logger(__name__)
 class ClientConnection:
     """Active client connection"""
     client_id: str
+    client_name: str  # User-friendly name
+    location: str  # Optional location
     tunnels: Dict[str, 'TunnelConnection']  # tunnel_id -> tunnel
     last_seen: float
     rx_bytes: int = 0
@@ -162,17 +164,25 @@ class ClientManager:
         
         Args:
             tunnel_id: Tunnel ID
-            payload: Payload data (contains token and wan_interface)
+            payload: Payload data (contains token, wan_interface, client_name, location)
             addr: Source address
         """
         try:
-            # Parse payload: token (64 bytes) + wan_interface (16 bytes)
+            # Parse payload: token (64 bytes) + wan_interface (16 bytes) + client_name (128 bytes) + location (128 bytes)
             if len(payload) < 80:
                 logger.warning("short_auth_payload", length=len(payload), addr=addr)
                 return
             
             token = payload[:64].decode('utf-8').strip('\x00')
             wan_interface = payload[64:80].decode('utf-8').strip('\x00')
+            
+            # Parse optional client name and location (for backward compatibility)
+            client_name = "Unknown Client"
+            location = ""
+            if len(payload) >= 208:  # 64 + 16 + 128
+                client_name = payload[80:208].decode('utf-8').strip('\x00')
+            if len(payload) >= 336:  # 64 + 16 + 128 + 128
+                location = payload[208:336].decode('utf-8').strip('\x00')
             
             # Authenticate client
             client_id = authenticate_client(token, self.config)
@@ -196,16 +206,36 @@ class ClientManager:
                 if client_id not in self.clients:
                     self.clients[client_id] = ClientConnection(
                         client_id=client_id,
+                        client_name=client_name,
+                        location=location,
                         tunnels={},
                         last_seen=time.time()
                     )
                     self.total_clients += 1
                     
-                    # Create in database
-                    await self.database.create_client(client_id)
-                    logger.info("client_connected", client_id=client_id)
+                    # Create in database with name and location
+                    await self.database.create_client(
+                        client_id=client_id, 
+                        name=client_name,
+                        description=location
+                    )
+                    logger.info("client_connected", 
+                              client_id=client_id, 
+                              name=client_name,
+                              location=location)
                 
                 client = self.clients[client_id]
+                
+                # Update client name/location if changed
+                if client.client_name != client_name or client.location != location:
+                    client.client_name = client_name
+                    client.location = location
+                    await self.database.update_client_status(
+                        client_id, 
+                        "connected",
+                        name=client_name,
+                        description=location
+                    )
                 
                 # Create tunnel connection
                 tunnel = TunnelConnection(
@@ -427,6 +457,8 @@ class ClientManager:
         
         return {
             "client_id": client.client_id,
+            "client_name": client.client_name,
+            "location": client.location,
             "tunnels": tunnels,
             "active_tunnels": client.get_active_tunnel_count(),
             "rx_bytes": client.rx_bytes,
